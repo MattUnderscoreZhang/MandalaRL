@@ -1,4 +1,4 @@
-from my_types import Color, Zone, n_colors
+from my_types import Color, Zone, N_COLORS
 import unittest
 import game
 from jax import random, numpy as np
@@ -27,7 +27,7 @@ class GameTests(unittest.TestCase):
     def test_move_discard_into_deck(self):
         state = self.my_game.state
         state = state.at[index[Zone.DISCARD]].set(state[Zone.DECK])
-        state = state.at[index[Zone.DECK]].set(np.zeros(n_colors))
+        state = state.at[index[Zone.DECK]].set(np.zeros(N_COLORS))
         test_game = game.Game(state, self.my_game.finished_deck_once)
         test_game = game.move_discard_to_deck(test_game)
         state = test_game.state
