@@ -3,6 +3,7 @@ from typing import NamedTuple
 import tensorflow as tf
 import numpy as np
 from functools import partial
+import pdb
 
 
 class Game(NamedTuple):
@@ -32,8 +33,14 @@ def init_game(seed: tf.Tensor) -> Game:
     return game
 
 
+@tf.function
 def shuffle(deck_colors: ColorCount) -> DeckOrder:
-    card_colors = np.array([np.tile([i], n_cards) for i, n_cards in enumerate(deck_colors)])
+    """
+    Given a set of counts for the six colors, return a shuffled list with that many entries of each color.
+    """
+    deck_colors_i = tf.expand_dims(tf.range(tf.shape(deck_colors)[0], dtype=tf.int32), 1)
+    card_colors, _ = tf.map_fn(lambda i: (np.tile([i[0]], i[1]), i[0]), (deck_colors_i, deck_colors), dtype=(tf.int32, tf.int32))
+    card_colors = np.array(card_colors)
     card_colors = tf.reshape(card_colors, [1, -1])
     card_colors = tf.cast(card_colors, dtype="int64")
     n_cards = card_colors.shape[1]
