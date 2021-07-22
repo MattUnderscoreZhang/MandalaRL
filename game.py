@@ -4,6 +4,7 @@ import tensorflow as tf
 import numpy as np
 from functools import partial
 import pdb
+import time
 
 
 class Game(NamedTuple):
@@ -39,20 +40,10 @@ def shuffle(deck_colors: ColorCount) -> DeckOrder:
     Given a set of counts for the six colors, return a shuffled list with that many entries of each color.
     """
     deck_colors_i = tf.expand_dims(tf.range(tf.shape(deck_colors)[0], dtype=tf.int32), 1)
-    card_colors, _ = tf.map_fn(lambda i: (np.tile([i[0]], i[1]), i[0]), (deck_colors_i, deck_colors), dtype=(tf.int32, tf.int32))
-    card_colors = np.array(card_colors)
+    card_colors, _ = tf.map_fn(lambda i: (tf.tile(i[0], [i[1]]), i[0]), (deck_colors_i, deck_colors), dtype=(tf.int32, tf.int32))
     card_colors = tf.reshape(card_colors, [1, -1])
-    card_colors = tf.cast(card_colors, dtype="int64")
-    n_cards = card_colors.shape[1]
-    deck_indices, _, _ = tf.random.fixed_unigram_candidate_sampler(
-        true_classes=card_colors,
-        num_true=n_cards,
-        num_sampled=n_cards,
-        unique=True,
-        range_max=n_cards,
-        unigrams=[1]*n_cards
-        )
-    deck_order = tf.gather(card_colors[0], deck_indices)
+    card_colors = tf.cast(card_colors, dtype=tf.int64)
+    deck_order = tf.random.shuffle(card_colors)
     return deck_order
 
 
