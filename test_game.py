@@ -1,22 +1,17 @@
 from my_types import Color, Zone, N_COLORS
 import unittest
 import game
-from jax import random, numpy as np
-from jax.random import PRNGKey 
-from jax.ops import index
+import tensorflow as tf
 
 class GameTests(unittest.TestCase):
     def setUp(self):
-        seed = 0
-        self.key = PRNGKey(seed)
-        self.key, key1 = random.split(self.key, 2)
-        self.my_game = game.init_game(key1)
+        self.my_game = game.init_game()
 
 
-    def assert_state_validity(self, state):
-        color_counts = np.sum(state, axis=0)
-        assert(np.sum(state) == 108)
-        assert(all(color_counts == np.tile(18, 6)))
+    def assert_color_counts_validity(self, color_counts):
+        color_counts = tf.reduce_sum(color_counts, axis=0)
+        assert(tf.reduce_sum(color_counts) == 108)
+        assert(all(color_counts == tf.tile([18], [6])))
 
 
     def test_enums(self):
@@ -24,81 +19,93 @@ class GameTests(unittest.TestCase):
         assert(len(Zone) == 14)
 
 
-    def test_move_discard_into_deck(self):
-        state = self.my_game.state
-        state = state.at[index[Zone.DISCARD]].set(state[Zone.DECK])
-        state = state.at[index[Zone.DECK]].set(np.zeros(N_COLORS))
-        test_game = game.Game(state, self.my_game.finished_deck_once)
-        test_game = game.move_discard_to_deck(test_game)
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 88)
-        self.assert_state_validity(state)
-
-
     def test_draw(self):
-        self.key, key1, key2 = random.split(self.key, 3)
         test_game = self.my_game
-        test_game = game.move_from_deck(test_game, Zone.P1_HAND, 10, key1)
-        test_game = game.move_from_deck(test_game, Zone.P2_HAND, 5, key2)
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 73)
-        assert(np.sum(state[Zone.P1_HAND]) == 16)
-        assert(np.sum(state[Zone.P2_HAND]) == 11)
-        self.assert_state_validity(state)
+        test_game = game.move_cards_from_deck(test_game, Zone.P1_HAND, 10)
+        test_game = game.move_cards_from_deck(test_game, Zone.P2_HAND, 5)
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 73)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 16)
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 11)
+
+
+    def test_move_discard_into_deck(self):
+        test_game = self.my_game
+        color_counts = test_game.color_counts
+        color_counts = tf.tensor_scatter_nd_update(color_counts, [[Zone.DISCARD]], [color_counts[Zone.DECK]])
+        color_counts = tf.tensor_scatter_nd_update(color_counts, [[Zone.DECK]], [tf.tile([0], [N_COLORS])])
+        test_game = game.Game(color_counts, test_game.deck_order, test_game.deck_index, test_game.finished_deck_once)
+        test_game = game.move_discard_to_deck(test_game)
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 88)
+        self.assert_color_counts_validity(color_counts)
+
+
+    def test_move_cards_from_deck_to_cups(self):
+        # place 20 more cards into each cup
+        test_game = self.my_game
+        test_game = game.move_cards_from_deck(test_game, Zone.P1_CUP, 20)
+        test_game = game.move_cards_from_deck(test_game, Zone.P2_CUP, 20)
+        # check color_counts
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 48)
+        assert(tf.reduce_sum(color_counts[Zone.DISCARD]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 6)
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 6)
+        assert(tf.reduce_sum(color_counts[Zone.P1_CUP]) == 22)
+        assert(tf.reduce_sum(color_counts[Zone.P2_CUP]) == 22)
+        self.assert_color_counts_validity(color_counts)
+
+
+
+
+
+
+
+    def test_draw_more_than_deck(self):
+        test_game = self.my_game
+        test_game = game.move_cards_from_deck(test_game, Zone.DISCARD, 20)
+        test_game = game.move_cards_from_deck(test_game, Zone.P2_HAND, 80)
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 8)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 6)
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 68)
+        self.assert_color_counts_validity(color_counts)
 
 
     def test_draw_empty_deck(self):
         # place all but 30 cards from the deck into the discard pile
-        self.key, key1 = random.split(self.key, 2)
-        test_game = game.move_from_deck(self.my_game, Zone.DISCARD, 58, key1)
+        test_game = game.move_cards_from_deck(self.my_game, Zone.DISCARD, 58)
         # have each player draw 20 cards
-        self.key, key1, key2 = random.split(self.key, 3)
-        test_game = game.move_from_deck(test_game, Zone.P1_HAND, 20, key1)
-        test_game = game.move_from_deck(test_game, Zone.P2_HAND, 20, key2)
-        # check states
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 48)
-        assert(np.sum(state[Zone.DISCARD]) == 0)
-        assert(np.sum(state[Zone.P1_HAND]) == 26)
-        assert(np.sum(state[Zone.P2_HAND]) == 26)
-        self.assert_state_validity(state)
-
-
-    def test_move_cards_in_cup(self):
-        # place 20 more cards into each cup
-        self.key, key1, key2 = random.split(self.key, 3)
-        test_game = self.my_game
-        test_game = game.move_from_deck(test_game, Zone.P1_CUP, 20, key1)
-        test_game = game.move_from_deck(test_game, Zone.P2_CUP, 20, key2)
-        # check states
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 48)
-        assert(np.sum(state[Zone.DISCARD]) == 0)
-        assert(np.sum(state[Zone.P1_HAND]) == 6)
-        assert(np.sum(state[Zone.P2_HAND]) == 6)
-        assert(np.sum(state[Zone.P1_CUP]) == 22)
-        assert(np.sum(state[Zone.P2_CUP]) == 22)
-        self.assert_state_validity(state)
+        test_game = game.move_cards_from_deck(test_game, Zone.P1_HAND, 20)
+        test_game = game.move_cards_from_deck(test_game, Zone.P2_HAND, 20)
+        # check color_counts
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 48)
+        assert(tf.reduce_sum(color_counts[Zone.DISCARD]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 26)
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 26)
+        self.assert_color_counts_validity(color_counts)
 
 
     def test_move_cards_from_zone(self):
         # place cards from hand onto Mandala
         test_game = self.my_game
-        p1_colors, p1_counts = np.unique(test_game.state[Zone.P1_HAND], return_counts=True)
+        p1_colors, p1_counts = np.unique(test_game.color_counts[Zone.P1_HAND], return_counts=True)
         test_game = game.move_from_zone(test_game, Zone.P1_HAND, Zone.M1_MOUNTAIN, int(p1_colors[0]), int(p1_counts[0]))
-        p2_colors, p2_counts = np.unique(test_game.state[Zone.P2_HAND], return_counts=True)
+        p2_colors, p2_counts = np.unique(test_game.color_counts[Zone.P2_HAND], return_counts=True)
         test_game = game.move_from_zone(test_game, Zone.P2_HAND, Zone.M2_MOUNTAIN, int(p2_colors[0]), int(p2_counts[0]))
-        # check states
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 88)
-        assert(np.sum(state[Zone.DISCARD]) == 0)
-        assert(np.sum(state[Zone.P1_HAND]) == 6-p1_counts[0])
-        assert(np.sum(state[Zone.P2_HAND]) == 6-p2_counts[0])
-        assert(np.sum(state[Zone.P1_CUP]) == 2)
-        assert(np.sum(state[Zone.P2_CUP]) == 2)
-        assert(np.sum(state[Zone.M1_MOUNTAIN]) == 2+p1_counts[0])
-        assert(np.sum(state[Zone.M2_MOUNTAIN]) == 2+p2_counts[0])
-        self.assert_state_validity(state)
+        # check color_counts
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 88)
+        assert(tf.reduce_sum(color_counts[Zone.DISCARD]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 6-p1_counts[0])
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 6-p2_counts[0])
+        assert(tf.reduce_sum(color_counts[Zone.P1_CUP]) == 2)
+        assert(tf.reduce_sum(color_counts[Zone.P2_CUP]) == 2)
+        assert(tf.reduce_sum(color_counts[Zone.M1_MOUNTAIN]) == 2+p1_counts[0])
+        assert(tf.reduce_sum(color_counts[Zone.M2_MOUNTAIN]) == 2+p2_counts[0])
+        self.assert_color_counts_validity(color_counts)
 
 
     def test_move_all_cards_from_zone(self):
@@ -106,14 +113,14 @@ class GameTests(unittest.TestCase):
         test_game = self.my_game
         test_game = game.move_all_from_zone(test_game, Zone.P1_HAND, Zone.M1_MOUNTAIN)
         test_game = game.move_all_from_zone(test_game, Zone.P2_HAND, Zone.M2_MOUNTAIN)
-        # check states
-        state = test_game.state
-        assert(np.sum(state[Zone.DECK]) == 88)
-        assert(np.sum(state[Zone.DISCARD]) == 0)
-        assert(np.sum(state[Zone.P1_HAND]) == 0)
-        assert(np.sum(state[Zone.P2_HAND]) == 0)
-        assert(np.sum(state[Zone.P1_CUP]) == 2)
-        assert(np.sum(state[Zone.P2_CUP]) == 2)
-        assert(np.sum(state[Zone.M1_MOUNTAIN]) == 8)
-        assert(np.sum(state[Zone.M2_MOUNTAIN]) == 8)
-        self.assert_state_validity(state)
+        # check color_counts
+        color_counts = test_game.color_counts
+        assert(tf.reduce_sum(color_counts[Zone.DECK]) == 88)
+        assert(tf.reduce_sum(color_counts[Zone.DISCARD]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P1_HAND]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P2_HAND]) == 0)
+        assert(tf.reduce_sum(color_counts[Zone.P1_CUP]) == 2)
+        assert(tf.reduce_sum(color_counts[Zone.P2_CUP]) == 2)
+        assert(tf.reduce_sum(color_counts[Zone.M1_MOUNTAIN]) == 8)
+        assert(tf.reduce_sum(color_counts[Zone.M2_MOUNTAIN]) == 8)
+        self.assert_color_counts_validity(color_counts)
