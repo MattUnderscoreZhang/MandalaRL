@@ -14,3 +14,4 @@ Zone = IntEnum('Zone', ['DECK', 'DISCARD',
 
 N_COLORS = 6
 N_ZONES = 14
+N_CARDS = N_COLORS * 18

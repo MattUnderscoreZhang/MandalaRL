@@ -1,7 +1,9 @@
-from my_types import ColorCount, DeckOrder, Color, Zone, N_COLORS, N_ZONES
+from my_types import ColorCount, DeckOrder, Color, Zone, Key, N_COLORS, N_ZONES, N_CARDS
 from typing import NamedTuple
-import tensorflow as tf
-import numpy as np
+from jax import numpy as np
+from jax import jit, random
+from jax.lax import map, while_loop, cond
+from jax.random import PRNGKey
 from functools import partial
 
 
@@ -16,74 +18,77 @@ def init_game() -> Game:
     """
     Sets up a game.
     """
+    seed = 0
+    key = PRNGKey(seed)
     # make new game with a fresh deck
-    color_counts = tf.zeros([N_ZONES, N_COLORS], dtype=tf.dtypes.int32)
-    color_counts = tf.tensor_scatter_nd_update(color_counts, [[Zone.DECK]], [tf.tile([18], [N_COLORS])])
-    deck_order = shuffle(color_counts[Zone.DECK])
-    deck_index = len(deck_order) - 1
-    game = Game(color_counts, deck_order, deck_index, False)
+    color_counts = np.zeros((N_ZONES, N_COLORS))
+    color_counts = color_counts.at[Zone.DECK].set(np.tile(18, N_COLORS))
+    key, key1 = random.split(key, 2)
+    deck_order = shuffle(color_counts[Zone.DECK], key1)
+    game = Game(color_counts, deck_order, N_CARDS, False)
     # put two cards in each cup
-    game = move_cards_from_deck(game, Zone.P1_CUP, 2)
-    game = move_cards_from_deck(game, Zone.P2_CUP, 2)
-    # place two cards in each mountain
-    game = move_cards_from_deck(game, Zone.M1_MOUNTAIN, 2)
-    game = move_cards_from_deck(game, Zone.M2_MOUNTAIN, 2)
-    # each player draws 6 cards
-    game = move_cards_from_deck(game, Zone.P1_HAND, 6)
-    game = move_cards_from_deck(game, Zone.P2_HAND, 6)
-    return game
+    key, key1, key2 = random.split(key, 3)
+    game = move_cards_from_deck(game, Zone.P1_CUP, 2, key1)
+    game = move_cards_from_deck(game, Zone.P2_CUP, 2, key2)
+    # # place two cards in each mountain
+    # game = move_cards_from_deck(game, Zone.M1_MOUNTAIN, 2)
+    # game = move_cards_from_deck(game, Zone.M2_MOUNTAIN, 2)
+    # # each player draws 6 cards
+    # game = move_cards_from_deck(game, Zone.P1_HAND, 6)
+    # game = move_cards_from_deck(game, Zone.P2_HAND, 6)
+    # return game
 
 
-@tf.function
-def shuffle(deck_colors: ColorCount) -> DeckOrder:
-    """
-    Given a set of counts for the six colors, return a shuffled list with that many entries of each color.
-    """
-    deck_colors_i = tf.expand_dims(tf.range(tf.shape(deck_colors)[0], dtype=tf.int32), 1)
-    deck_order, _ = tf.map_fn(lambda i: (tf.tile(i[0], [i[1]]), i[0]), (deck_colors_i, deck_colors), dtype=(tf.int32, tf.int32))
-    deck_order = tf.reshape(deck_order, [1, -1])[0]
-    deck_order = tf.cast(deck_order, dtype=tf.int64)
-    deck_order = tf.random.shuffle(deck_order)
+@jit
+def shuffle(color_counts: ColorCount, key: Key) -> DeckOrder:
+    deck_color_indices = np.array([np.sum(color_counts[:i]) for i in range(N_COLORS + 1)])
+    deck_order = np.stack([np.sum(map(lambda j: i >= j, deck_color_indices)) - 1 for i in range(N_CARDS)])
+    deck_order = random.permutation(key, deck_order)  # 6 indicates out of range
     return deck_order
 
 
-# @tf.function
-def move_cards_from_deck(game: Game, zone: Zone, n_cards: int) -> Game:
+# @jit
+def move_cards_from_deck(game: Game, zone: Zone, n_cards: int, key: Key) -> Game:
     """
     Move cards from the deck into another zone.
     """
-    n_cards_to_move = tf.minimum(n_cards, tf.math.reduce_sum(game.color_counts[Zone.DECK]))
-    i = tf.constant(0)
-    while_condition = lambda i, _: tf.less(i, n_cards_to_move)
+    n_cards_to_move = np.minimum(n_cards, np.sum(game.color_counts[Zone.DECK]))
 
-    def move_card_from_deck(i, game):
-        color = game.deck_order[game.deck_index]
-        def true_fn() -> Game:  # no cards left - shuffle discard pile into deck
-            return move_discard_to_deck(game)
-        def false_fn() -> Game:  # move the deck index
-            deck_index = game.deck_index - 1
-            return Game(game.color_counts, game.deck_order, deck_index, game.finished_deck_once)
-        game = tf.cond(game.deck_index==0, true_fn=true_fn, false_fn=false_fn)
+    def move_card_from_deck(loop_data):
+        i, game, key = loop_data
         color_counts = game.color_counts
-        color_counts = tf.tensor_scatter_nd_add(color_counts, [[Zone.DECK, color]], [-1])
-        color_counts = tf.tensor_scatter_nd_add(color_counts, [[zone, color]], [1])
+        color = game.deck_order[game.deck_index]
+        color_counts = color_counts.at[Zone.DECK, color].add(-1)
+        color_counts = color_counts.at[zone, color].add(1)
         game = Game(color_counts, game.deck_order, game.deck_index, game.finished_deck_once)
-        return [tf.add(i, 1), game]
+        def true_fn(true_loop_data):
+            game, key = true_loop_data
+            key, key1 = random.split(key, 2)
+            game = move_discard_to_deck(game, key1)
+            return game, key
+        false_fn = lambda game: Game(game.color_counts, game.deck_order, game.deck_index - 1, game.finished_deck_once)
+        game, key = cond(game.deck_index == 0, true_fn, false_fn, (game, key))
+        return [i + 1, game, key]
 
-    i, game = tf.while_loop(while_condition, move_card_from_deck, [i, game])
+    # i = np.constant(0)
+    while_condition = lambda loop_data: loop_data[0] < n_cards_to_move
+    i = 0
+    i, game, key = while_loop(while_condition, move_card_from_deck, [i, game, key])
+    import pdb; pdb.set_trace()
     return game
 
 
-@tf.function
-def move_discard_to_deck(game: Game) -> Game:
+@jit
+def move_discard_to_deck(game: Game, key: Key) -> Game:
     """
     Move discard pile into deck.
     """
     color_counts = game.color_counts
-    color_counts = tf.tensor_scatter_nd_update(color_counts, [[Zone.DECK]], [color_counts[Zone.DISCARD]])
-    color_counts = tf.tensor_scatter_nd_update(color_counts, [[Zone.DISCARD]], [tf.tile([0], [N_COLORS])])
-    deck_order = shuffle(game.color_counts[Zone.DECK])
-    deck_index = tf.reduce_sum(game.color_counts[Zone.DISCARD]) - 1
+    assert(np.sum(color_counts[Zone.DECK]) == 0)
+    color_counts = color_counts.at[Zone.DECK].update(color_counts[Zone.DISCARD])
+    color_counts = color_counts.at[Zone.DISCARD].update(np.tile(0, N_COLORS))
+    deck_order = shuffle(color_counts[Zone.DECK], key)
+    deck_index = np.sum(color_counts[Zone.DISCARD]) - 1
     return Game(color_counts, deck_order, deck_index, True)
 
 
@@ -97,21 +102,7 @@ def move_discard_to_deck(game: Game) -> Game:
 
 
 
-@tf.function
-def move_discard_then_move_from_deck(game: Game, zone: Zone, n_cards: int) -> Game:
-    """
-    Getting around recursion problems in Jax.
-    """
-    game = move_discard_to_deck(game)
-    color = tf.random.fixed_unigram_candidate_sampler(N_COLORS, shape=[n_cards], p=game.color_counts[Zone.DECK])
-    color_counts = game.color_counts
-    color_counts = color_counts.at[Zone.DECK, color].add(-n_cards)
-    color_counts = color_counts.at[zone, color].add(n_cards)
-    game = Game(color_counts, game.finished_deck_once)
-    return game
-
-
-@tf.function
+@jit
 def move_from_zone(game: Game, zone_1: Zone, zone_2: Zone, color: Color, n_cards: int) -> Game:
     """
     Move cards from one zone into another zone.
@@ -123,12 +114,12 @@ def move_from_zone(game: Game, zone_1: Zone, zone_2: Zone, color: Color, n_cards
     return Game(color_counts, game.finished_deck_once)
 
 
-@tf.function
+@jit
 def move_all_from_zone(game: Game, zone_1: Zone, zone_2: Zone) -> Game:
     """
     Move all cards from one zone into another zone.
     """
     color_counts = game.color_counts
     color_counts = color_counts.at[zone_2].set(color_counts[zone_1] + color_counts[zone_2])
-    color_counts = color_counts.at[zone_1].set(tf.zeros([N_COLORS]))
+    color_counts = color_counts.at[zone_1].set(np.zeros([N_COLORS]))
     return Game(color_counts, game.finished_deck_once)
